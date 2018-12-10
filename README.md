@@ -9,7 +9,8 @@ The initial implementation thus contains only the minimal set of API calls to su
 
 ## Highlights
 
-- Logs into Mattermost team server with username and password
+- Logs into Mattermost team server with username and password ..OR..
+- Uses a personal access token for authentication
 - Connects via websocket for real-time interaction
 - Can post messages to joined channels
 - Can be invited to channels / DMs since its just a regular user
@@ -26,10 +27,10 @@ The following environment variables may be defined to alter behavior:
 | MATTERMOST\_LOG\_LEVEL | No | (default: info) set log level (also: debug, ...) |
 | MATTERMOST\_USE\_TLS | No | (default: true) set to 'false' to use http/ws instead of https/wss |
 
-## Mattermost 5.0.0
+## Mattermost 5.x.x
 
 This client always tries to track the latest version of Mattermost.
-As version `5.0.0` of Mattermost might introduce backwards incompatible API changes make sure you are using the latest version of this library.
+As of version `5.0.0` of Mattermost might introduce backwards incompatible API changes make sure you are using the latest version of this library.
 
 ## Older versions of Mattermost
 

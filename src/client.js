@@ -1,5 +1,4 @@
 const request     = require('request');
-const querystring = require('querystring');
 const WebSocket   = require('ws');
 const TextEncoder = require('text-encoding');
 const Log            = require('log');
@@ -18,17 +17,15 @@ const tlsverify = !(process.env.MATTERMOST_TLS_VERIFY || '').match(/^false|0|no|
 const useTLS = !(process.env.MATTERMOST_USE_TLS || '').match(/^false|0|no|off$/i);
 
 class Client extends EventEmitter {
-    constructor(host, group, email, password, options) {
+    constructor(host, group, options) {
         super();
         this.host = host;
         this.group = group;
-        this.email = email;
-        this.password = password;
-
         this.options = options ? options : {wssPort: 443, httpPort: 80};
 
         this.authenticated = false;
         this.connected = false;
+        this.personalAccessToken = false;
         this.token = null;
 
         this.self = null;
@@ -41,12 +38,12 @@ class Client extends EventEmitter {
         this._messageID = 0;
         this._pending = {};
 
-        this._pingInterval = (this.options.pingInterval != null) 
+        this._pingInterval = (this.options.pingInterval != null)
                             ? this.options.pingInterval
                             : defaultPingInterval;
 
-        this.autoReconnect = (this.options.autoReconnect != null) 
-                            ? this.options.autoReconnect 
+        this.autoReconnect = (this.options.autoReconnect != null)
+                            ? this.options.autoReconnect
                             : true;
 
         this.httpProxy = (this.options.httpProxy != null) ? this.options.httpProxy : false;
@@ -67,10 +64,21 @@ class Client extends EventEmitter {
         this._onTeams = this._onTeams.bind(this);
     }
 
-    login() {
+    login(email, password) {
+        this.personalAccessToken = false;
+        this.email = email;
+        this.password = password;
         this.logger.info('Logging in...');
-        return this._apiCall('POST', usersRoute + '/login', 
+        return this._apiCall('POST', usersRoute + '/login',
                             {login_id: this.email, password: this.password}, this._onLogin);
+    }
+
+    tokenLogin(token) {
+      this.token = token
+      this.personalAccessToken = true
+      this.logger.info('Logging in with personal access token...')
+      const uri = usersRoute + '/me';
+      return this._apiCall('GET', uri, null, this._onLogin);
     }
 
     _onLogin(data, headers) {
@@ -83,7 +91,9 @@ class Client extends EventEmitter {
             } else {
                 this.authenticated = true;
                 // Continue happy flow here
-                this.token = headers.token;
+                if (!this.personalAccessToken) {
+                    this.token = headers.token;
+                }
                 this.socketUrl = (useTLS ? 'wss://' : 'ws://') + this.host + ((useTLS && (this.options.wssPort != null)) ? `:${this.options.wssPort}` : ((this.options.httpPort != null) ? `:${this.options.httpPort}` : '')) + '/api/v4/websocket';
                 this.logger.info(`Websocket URL: ${this.socketUrl}`);
                 this.self = new User(data);
@@ -321,7 +331,10 @@ class Client extends EventEmitter {
         this.logger.info("Reconnecting in %dms", timeout);
         return setTimeout(() => {
             this.logger.info('Attempting reconnect');
-            return this.login();
+            if (this.personalAccessToken) {
+              return this.tokenLogin(this.personalAccessToken)
+            }
+            return this.login(this.email, this.password);
         }
         , timeout);
     }
@@ -352,11 +365,29 @@ class Client extends EventEmitter {
                 return this.emit('ping', message);
             case 'posted':
                 return this.emit('message', m);
-            case 'hello': case 'typing': case 'post_edit': case 'post_deleted': case 'user_added': case 'user_removed': case 'status_change': case 'user_role_updated':
+            case 'added_to_team':
+            case 'authentication_challenge':
+            case 'channel_converted':
+            case 'channel_created':
+            case 'channel_deleted':
+            case 'channel_member_updated':
+            case 'channel_updated':
+            case 'channel_viewed':
+            case 'config_changed':
+            case 'delete_team':
+            case 'ephemeral_message':
+            case 'hello':
+            case 'typing':
+            case 'post_edit':
+            case 'post_deleted':
+            case 'preference_changed':
+            case 'user_added':
+            case 'user_removed':
+            case 'user_role_updated':
+            case 'user_updated':
+            case 'status_change':
+            case 'webrtc':
                 // Generic handler
-                return this.emit(message.event, message);
-            case 'channel_viewed': case 'preference_changed': case 'ephemeral_message':
-                // These are personal messages
                 return this.emit(message.event, message);
             case 'new_user':
                 this.loadUser(message.data.user_id);
@@ -426,6 +457,25 @@ class Client extends EventEmitter {
               return this.customMessage(postData, channelID);
           }
             return true;
+        });
+    }
+
+    react(messageID, emoji) {
+        const postData = {
+            user_id: this.self.id,
+            post_id: messageID,
+            emoji_name: emoji,
+            create_at: 0
+        };
+        return this._apiCall('POST', '/reactions', postData, (data, headers) => {
+            this.logger.debug('Created reaction');
+        });
+    }
+
+    unreact(messageID, emoji) {
+        const uri = `/users/me/posts/${messageID}/reactions/${emoji}`;
+        return this._apiCall('DELETE', uri, [], (data, headers) => {
+            this.logger.debug('Deleted reaction');
         });
     }
 
@@ -533,7 +583,7 @@ class Client extends EventEmitter {
                 'Content-Length': new TextEncoder.TextEncoder('utf-8').encode(post_data).length
             }
         };
-        
+
         if (this.token) { options.headers['Authorization'] = `BEARER ${this.token}`; }
         if (this.httpProxy) { options.proxy = this.httpProxy; }
 
@@ -542,8 +592,8 @@ class Client extends EventEmitter {
 
         return request(options, function(error, res, value) {
             if (error) {
-                if (callback) { 
-                    return callback({'id': null, 'error': error.errno}, {}, callback_params); 
+                if (callback) {
+                    return callback({'id': null, 'error': error.errno}, {}, callback_params);
                 }
             } else {
                 if (callback) {
